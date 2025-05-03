@@ -23,6 +23,7 @@ namespace zylann::voxel {
 class VoxelTool;
 class VoxelStream;
 class VoxelSaveCompletionTracker;
+class VoxelPreloadCompletionTracker;
 
 #ifdef VOXEL_ENABLE_INSTANCER
 class VoxelInstancer;
@@ -351,6 +352,8 @@ private:
 	// Bindings
 
 	Ref<VoxelSaveCompletionTracker> _b_save_modified_blocks();
+	Ref<VoxelPreloadCompletionTracker> preload_blocks(Vector3i origin, Vector3i extents, int lod_index);
+
 	void _b_set_voxel_bounds(AABB aabb);
 	AABB _b_get_voxel_bounds() const;
 
