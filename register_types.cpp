@@ -41,6 +41,7 @@
 #include "terrain/variable_lod/voxel_lod_terrain.h"
 #include "terrain/voxel_a_star_grid_3d.h"
 #include "terrain/voxel_mesh_block.h"
+#include "terrain/voxel_preload_completion_tracker.h"
 #include "terrain/voxel_save_completion_tracker.h"
 #include "terrain/voxel_viewer.h"
 #include "util/godot/check_ref_ownership.h"
@@ -275,6 +276,7 @@ void initialize_voxel_module(ModuleInitializationLevel p_level) {
 
 		ClassDB::register_class<VoxelColorPalette>();
 		ClassDB::register_class<VoxelDataBlockEnterInfo>();
+		ClassDB::register_class<VoxelPreloadCompletionTracker>();
 		ClassDB::register_class<VoxelSaveCompletionTracker>();
 		ClassDB::register_class<pg::VoxelGraphFunction>();
 

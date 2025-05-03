@@ -34,6 +34,7 @@
 #include "../../util/thread/rw_lock.h"
 #include "../free_mesh_task.h"
 #include "../voxel_save_completion_tracker.h"
+#include "../voxel_preload_completion_tracker.h"
 #include "voxel_lod_terrain_update_task.h"
 
 #ifdef VOXEL_ENABLE_SMOOTH_MESHING
@@ -3072,6 +3073,45 @@ Ref<VoxelSaveCompletionTracker> VoxelLodTerrain::_b_save_modified_blocks() {
 	return VoxelSaveCompletionTracker::create(tracker);
 }
 
+Ref<VoxelPreloadCompletionTracker> VoxelLodTerrain::preload_blocks(Vector3i origin, Vector3i extents, int lod_index) {
+
+	const int data_block_size = get_data_block_size();
+	Box3i preload_box = Box3i::from_center_extents(origin, extents).snapped(data_block_size);
+	BufferedTaskScheduler &task_scheduler = BufferedTaskScheduler::get_for_current_thread();
+
+	StdVector<Vector3i> blocks_to_preload;
+
+	VoxelData &voxel_data = get_storage();
+	voxel_data.view_area(preload_box, 0, &blocks_to_preload, nullptr, nullptr);
+	const Box3i bounds_in_blocks = voxel_data.get_bounds().downscaled(voxel_data.get_block_size());
+	preload_box = preload_box.clipped(bounds_in_blocks);
+
+	std::shared_ptr<AsyncDependencyTracker> tracker = make_shared_instance<AsyncDependencyTracker>(blocks_to_preload.size());
+
+	preload_box.for_each_cell_zxy([this, data_block_size, lod_index, tracker](Vector3i block_pos) {
+	
+		VoxelGenerator::BlockTaskParams params;
+		params.volume_id = _volume_id;
+		params.block_position = block_pos;
+		params.lod_index = lod_index;
+		params.block_size = data_block_size;
+		params.stream_dependency = _streaming_dependency;
+		params.priority_dependency.shared = VoxelEngine::get_singleton().get_shared_viewers_data_from_default_world();
+		params.tracker = tracker;
+		params.drop_beyond_max_distance = false;
+		params.data = _data;
+		params.cancellation_token = TaskCancellationToken();
+	
+		IThreadedTask *task = _streaming_dependency->generator->create_block_task(params);
+	
+		VoxelEngine::get_singleton().push_async_task(task);
+
+	} );
+
+	ZN_ASSERT_RETURN_V(tracker != nullptr, Ref<VoxelPreloadCompletionTracker>());
+	return VoxelPreloadCompletionTracker::create(tracker);
+}
+
 void VoxelLodTerrain::_b_set_voxel_bounds(AABB aabb) {
 	ERR_FAIL_COND(!math::is_valid_size(aabb.size));
 	set_voxel_bounds(Box3i(math::round_to_int(aabb.position), math::round_to_int(aabb.size)));
@@ -3794,6 +3834,8 @@ void VoxelLodTerrain::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_voxel_tool"), &Self::get_voxel_tool);
 	ClassDB::bind_method(D_METHOD("save_modified_blocks"), &Self::_b_save_modified_blocks);
+
+	ClassDB::bind_method(D_METHOD("preload_blocks", "origin", "extents", "lod_index"), &Self::preload_blocks);
 
 	ClassDB::bind_method(D_METHOD("set_run_stream_in_editor"), &Self::set_run_stream_in_editor);
 	ClassDB::bind_method(D_METHOD("is_stream_running_in_editor"), &Self::is_stream_running_in_editor);
