@@ -123,6 +123,9 @@ public:
 	void on_scene_instance_modified(Vector3i data_block_position, unsigned int render_block_index);
 	void on_data_block_saved(Vector3i data_grid_position, unsigned int lod_index);
 
+	void emit_mesh_block_entered(Vector3i bpos, int lod, int rend_to_data_factor);
+	void emit_mesh_block_exited(Vector3i bpos, int lod, int rend_to_data_factor);
+
 	// Internal properties
 
 	void set_mesh_block_size_po2(unsigned int p_mesh_block_size_po2);

@@ -1328,7 +1328,11 @@ void VoxelInstancer::on_mesh_block_enter(
 	if (lod_index >= _lods.size()) {
 		return;
 	}
+
 	create_render_blocks(render_grid_position, lod_index, surface_arrays, vertex_range_end, index_range_end);
+
+	const int render_to_data_factor = 1 << (_parent_mesh_block_size_po2 - _parent_data_block_size_po2);
+	emit_mesh_block_entered(render_grid_position, lod_index, render_to_data_factor);
 }
 
 void VoxelInstancer::on_mesh_block_exit(Vector3i render_grid_position, unsigned int lod_index) {
@@ -1385,6 +1389,8 @@ void VoxelInstancer::on_mesh_block_exit(Vector3i render_grid_position, unsigned 
 			remove_block(block_it->second, _fading_enabled);
 		}
 	}
+
+	emit_mesh_block_exited(render_grid_position, lod_index, render_to_data_factor);
 }
 
 void VoxelInstancer::save_all_modified_blocks(
@@ -2979,6 +2985,23 @@ void VoxelInstancer::on_data_block_saved(Vector3i data_grid_position, unsigned i
 	}
 }
 
+void VoxelInstancer::emit_mesh_block_entered(Vector3i bpos, int lod, int render_to_data_factor) {
+	// Not sure about exposing buffers directly... some stuff on them is useful to obtain directly,
+	// but also it allows scripters to mess with voxels in a way they should not.
+	// Example: modifying voxels without locking them first, while another thread may be reading them at the same
+	// time. The same thing could happen the other way around (threaded task modifying voxels while you try to read
+	// them). It isn't planned to expose VoxelBuffer locks because there are too many of them, it may likely shift
+	// to another system in the future, and might even be changed to no longer inherit Reference. So unless this is
+	// absolutely necessary, buffers aren't exposed. Workaround: use VoxelTool
+	// const Variant vbuffer = block->voxels;
+	// const Variant *args[2] = { &vpos, &vbuffer };
+	call_deferred( "emit_signal", VoxelStringNames::get_singleton().mesh_block_entered, bpos, lod, render_to_data_factor);
+}
+
+void VoxelInstancer::emit_mesh_block_exited(Vector3i bpos, int lod, int render_to_data_factor) {
+	call_deferred( "emit_signal", VoxelStringNames::get_singleton().mesh_block_exited, bpos, lod, render_to_data_factor);
+}
+
 void VoxelInstancer::set_mesh_block_size_po2(unsigned int p_mesh_block_size_po2) {
 	_parent_mesh_block_size_po2 = p_mesh_block_size_po2;
 }
@@ -3360,6 +3383,10 @@ void VoxelInstancer::_bind_methods() {
 	BIND_ENUM_CONSTANT(DEBUG_DRAW_ALL_BLOCKS);
 	BIND_ENUM_CONSTANT(DEBUG_DRAW_EDITED_BLOCKS);
 	BIND_ENUM_CONSTANT(DEBUG_DRAW_FLAGS_COUNT);
+
+	ADD_SIGNAL(MethodInfo("mesh_block_entered", PropertyInfo(Variant::VECTOR3I, "position"), PropertyInfo(Variant::INT, "lod"), PropertyInfo(Variant::INT, "render_to_data_factor")));
+	ADD_SIGNAL(MethodInfo("mesh_block_exited", PropertyInfo(Variant::VECTOR3I, "position"), PropertyInfo(Variant::INT, "lod"), PropertyInfo(Variant::INT, "render_to_data_factor")));
+
 }
 
 } // namespace zylann::voxel
