@@ -5,6 +5,7 @@
 #include "../../util/string/format.h"
 #include "../../util/string/std_string.h"
 #include "../compressed_data.h"
+#include "../storage/voxel_buffer_gd.h"
 #include "connection.h"
 
 #include <string_view>
@@ -427,6 +428,24 @@ void VoxelStreamSQLite::load_all_blocks(FullLoadingResult &result) {
 	ERR_FAIL_COND(request_result == false);
 }
 
+Array VoxelStreamSQLite::get_all_blocks() {
+	FullLoadingResult result;
+	load_all_blocks(result);
+
+	Array blocks;
+	for (const FullLoadingResult::Block &block : result.blocks) {
+		Dictionary block_dict;
+		block_dict["position"] = block.position;
+		block_dict["lod"] = block.lod;
+		std::shared_ptr<zylann::voxel::VoxelBuffer> voxels_copy = block.voxels;
+		Ref<godot::VoxelBuffer> buffer_wrapper = godot::VoxelBuffer::create_shared(voxels_copy);
+		block_dict["voxels"] = buffer_wrapper;
+		blocks.append(block_dict);
+	}
+
+	return blocks;
+}
+
 int VoxelStreamSQLite::get_used_channels_mask() const {
 	// Assuming all, since that stream can store anything.
 	return VoxelBuffer::ALL_CHANNELS_MASK;
@@ -671,6 +690,8 @@ void VoxelStreamSQLite::_bind_methods() {
 	ClassDB::bind_method(
 			D_METHOD("get_preferred_coordinate_format"), &VoxelStreamSQLite::get_preferred_coordinate_format
 	);
+
+	ClassDB::bind_method(D_METHOD("get_all_blocks"), &VoxelStreamSQLite::get_all_blocks);
 
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X16_Y16_Z16_L16);
 	BIND_ENUM_CONSTANT(COORDINATE_FORMAT_INT64_X19_Y19_Z19_L7);

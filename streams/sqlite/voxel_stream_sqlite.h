@@ -155,6 +155,8 @@ private:
 		}
 	};
 
+	Array get_all_blocks();
+
 	void flush_cache_to_connection(sqlite::Connection *p_connection);
 
 	static void _bind_methods();
