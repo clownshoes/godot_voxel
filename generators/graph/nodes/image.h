@@ -6,21 +6,35 @@
 
 namespace zylann::voxel::pg {
 
-inline float get_pixel_repeat(const Image &im, int x, int y, int w, int h) {
-	return im.get_pixel(math::wrap(x, w), math::wrap(y, h)).r;
+enum Channel : uint32_t { CHANNEL_R = 0, CHANNEL_G = 1, CHANNEL_B = 2, CHANNEL_A = 3 };
+
+inline float get_pixel_repeat(const Image &im, int x, int y, int w, int h, Channel channel = CHANNEL_R) {
+	const Color pixel = im.get_pixel(math::wrap(x, w), math::wrap(y, h));
+	switch (channel) {
+		case CHANNEL_R:
+			return pixel.r;
+		case CHANNEL_G:
+			return pixel.g;
+		case CHANNEL_B:
+			return pixel.b;
+		case CHANNEL_A:
+			return pixel.a;
+		default:
+			return pixel.r;
+	}
 }
 
-inline float get_pixel_repeat_linear(const Image &im, float x, float y, int im_w, int im_h) {
+inline float get_pixel_repeat_linear(const Image &im, float x, float y, int im_w, int im_h, Channel channel = CHANNEL_R) {
 	const int x0 = int(Math::floor(x));
 	const int y0 = int(Math::floor(y));
 
 	const float xf = x - x0;
 	const float yf = y - y0;
 
-	const float h00 = get_pixel_repeat(im, x0, y0, im_w, im_h);
-	const float h10 = get_pixel_repeat(im, x0 + 1, y0, im_w, im_h);
-	const float h01 = get_pixel_repeat(im, x0, y0 + 1, im_w, im_h);
-	const float h11 = get_pixel_repeat(im, x0 + 1, y0 + 1, im_w, im_h);
+	const float h00 = get_pixel_repeat(im, x0, y0, im_w, im_h, channel);
+	const float h10 = get_pixel_repeat(im, x0 + 1, y0, im_w, im_h, channel);
+	const float h01 = get_pixel_repeat(im, x0, y0 + 1, im_w, im_h, channel);
+	const float h11 = get_pixel_repeat(im, x0 + 1, y0 + 1, im_w, im_h, channel);
 
 	// Bilinear filter
 	const float h = Math::lerp(Math::lerp(h00, h10, xf), Math::lerp(h01, h11, xf), yf);
@@ -119,10 +133,12 @@ void register_image_nodes(Span<NodeType> types) {
 
 	{
 		enum Filter : uint32_t { FILTER_NEAREST = 0, FILTER_BILINEAR };
+		
 		struct Params {
 			const Image *image;
 			const ImageRangeGrid *image_range_grid;
 			Filter filter;
+			Channel channel;
 		};
 		NodeType &t = types[VoxelGraphFunction::NODE_IMAGE_2D];
 		t.name = "Image";
@@ -136,6 +152,13 @@ void register_image_nodes(Span<NodeType> types) {
 		NodeType::Param &filter_param = t.params.back();
 		filter_param.enum_items.push_back("Nearest");
 		filter_param.enum_items.push_back("Bilinear");
+
+		t.params.push_back(NodeType::Param("channel", Variant::INT, CHANNEL_R));
+		NodeType::Param &channel_param = t.params.back();
+		channel_param.enum_items.push_back("Red");
+		channel_param.enum_items.push_back("Green");
+		channel_param.enum_items.push_back("Blue");
+		channel_param.enum_items.push_back("Alpha");
 
 		t.compile_func = [](CompileContext &ctx) {
 			Ref<Image> image = ctx.get_param(0);
@@ -158,6 +181,7 @@ void register_image_nodes(Span<NodeType> types) {
 			p.image = *image;
 			p.image_range_grid = im_range;
 			p.filter = static_cast<Filter>(static_cast<int>(ctx.get_param(1)));
+			p.channel = static_cast<Channel>(static_cast<int>(ctx.get_param(2)));
 			ctx.set_params(p);
 			ctx.add_delete_cleanup(im_range);
 		};
@@ -180,11 +204,11 @@ void register_image_nodes(Span<NodeType> types) {
 			// TODO Optimized path for most used formats, `get_pixel` is kinda slow
 			if (p.filter == FILTER_NEAREST) {
 				for (uint32_t i = 0; i < out.size; ++i) {
-					out.data[i] = get_pixel_repeat(im, x.data[i], y.data[i], w, h);
+					out.data[i] = get_pixel_repeat(im, x.data[i], y.data[i], w, h, p.channel);
 				}
 			} else {
 				for (uint32_t i = 0; i < out.size; ++i) {
-					out.data[i] = get_pixel_repeat_linear(im, x.data[i], y.data[i], w, h);
+					out.data[i] = get_pixel_repeat_linear(im, x.data[i], y.data[i], w, h, p.channel);
 				}
 			}
 		};
