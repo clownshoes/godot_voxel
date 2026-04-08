@@ -9,6 +9,9 @@
 #include "voxel_graph_node_inspector_wrapper.h"
 
 ZN_GODOT_FORWARD_DECLARE(class Button)
+ZN_GODOT_FORWARD_DECLARE(class HBoxContainer)
+ZN_GODOT_FORWARD_DECLARE(class VBoxContainer)
+ZN_GODOT_FORWARD_DECLARE(class Label)
 
 namespace zylann::voxel {
 
@@ -47,8 +50,15 @@ private:
 	void _on_generator_changed();
 	void _hide_deferred();
 
+	void _on_graph_editor_enter_graph_requested(Ref<pg::VoxelGraphFunction> p_function, String p_name);
+	void _enter_graph(Ref<pg::VoxelGraphFunction> p_function, const String &p_name);
+	void _breadcrumb_button_pressed(int p_index);
+	void _update_breadcrumb_bar();
+	void _reset_breadcrumbs();
+
 	static void _bind_methods();
 
+	VBoxContainer *_main_container = nullptr;
 	VoxelGraphEditor *_graph_editor = nullptr;
 	VoxelGraphEditorWindow *_graph_editor_window = nullptr;
 	VoxelGraphEditorIODialog *_io_dialog = nullptr;
@@ -56,6 +66,14 @@ private:
 	bool _deferred_visibility_scheduled = false;
 	zylann::godot::ObjectWeakRef<VoxelNode> _voxel_node;
 	StdVector<Ref<VoxelGraphNodeInspectorWrapper>> _node_wrappers;
+
+	struct BreadcrumbEntry {
+		Ref<pg::VoxelGraphFunction> function;
+		String display_name;
+	};
+	StdVector<BreadcrumbEntry> _breadcrumb_path;
+	HBoxContainer *_breadcrumb_bar = nullptr;
+
 	// Workaround for a new Godot 4 behavior:
 	// When we inspect an object, Godot calls `edit(nullptr)` on our plugin first, and `make_visible(false)`.
 	// But this plugin needs to allow inspecting nodes of the graph. When a node is selected, it tells Godot to
