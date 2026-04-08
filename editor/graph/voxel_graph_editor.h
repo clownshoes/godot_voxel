@@ -40,6 +40,7 @@ public:
 	static const char *SIGNAL_NODES_DELETED;
 	static const char *SIGNAL_REGENERATE_REQUESTED;
 	static const char *SIGNAL_POPOUT_REQUESTED;
+	static const char *SIGNAL_ENTER_GRAPH_REQUESTED;
 
 	VoxelGraphEditor();
 
