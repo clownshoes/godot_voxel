@@ -4,6 +4,9 @@
 #include "../../terrain/voxel_node.h"
 #include "../../util/containers/container_funcs.h"
 #include "../../util/godot/classes/button.h"
+#include "../../util/godot/classes/label.h"
+#include "../../util/godot/classes/h_box_container.h"
+#include "../../util/godot/classes/v_box_container.h"
 #include "../../util/godot/classes/editor_interface.h"
 #include "../../util/godot/classes/editor_selection.h"
 #include "../../util/godot/classes/node.h"
@@ -34,8 +37,17 @@ VoxelGraphEditorPlugin::VoxelGraphEditorPlugin() {}
 // See https://github.com/godotengine/godot-cpp/issues/1179
 void VoxelGraphEditorPlugin::init() {
 	// EditorInterface *ed = get_editor_interface();
+
+	_main_container = memnew(VBoxContainer);
+	_main_container->set_custom_minimum_size(Size2(0, 300) * EDSCALE);
+
+	_breadcrumb_bar = memnew(HBoxContainer);
+	_breadcrumb_bar->set_visible(false);
+	_main_container->add_child(_breadcrumb_bar);
+
 	_graph_editor = memnew(VoxelGraphEditor);
-	_graph_editor->set_custom_minimum_size(Size2(0, 300) * EDSCALE);
+	_graph_editor->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	_graph_editor->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	_graph_editor->connect(
 			VoxelGraphEditor::SIGNAL_NODE_SELECTED,
 			callable_mp(this, &VoxelGraphEditorPlugin::_on_graph_editor_node_selected)
@@ -56,7 +68,13 @@ void VoxelGraphEditorPlugin::init() {
 			VoxelGraphEditor::SIGNAL_POPOUT_REQUESTED,
 			callable_mp(this, &VoxelGraphEditorPlugin::_on_graph_editor_popout_requested)
 	);
-	_bottom_panel_button = add_control_to_bottom_panel(_graph_editor, ZN_TTR("Voxel Graph"));
+	_graph_editor->connect(
+			VoxelGraphEditor::SIGNAL_ENTER_GRAPH_REQUESTED,
+			callable_mp(this, &VoxelGraphEditorPlugin::_on_graph_editor_enter_graph_requested)
+	);
+	_main_container->add_child(_graph_editor);
+
+	_bottom_panel_button = add_control_to_bottom_panel(_main_container, ZN_TTR("Voxel Graph"));
 	_bottom_panel_button->hide();
 
 	// TODO Move this to `_enter_tree` and remove it on `_exit_tree`?
@@ -130,9 +148,24 @@ void VoxelGraphEditorPlugin::_zn_edit(Object *p_object) {
 		}
 	}
 
-	_graph_editor->set_generator(generator);
-	if (generator.is_null()) {
-		_graph_editor->set_graph(graph);
+	const bool same_generator =
+			generator.is_valid() && generator == _graph_editor->get_generator();
+	const bool same_graph =
+			generator.is_null() && graph.is_valid() && graph == _graph_editor->get_graph();
+
+	const bool same_generator_via_breadcrumbs =
+			generator.is_valid() && !_breadcrumb_path.empty() &&
+			_breadcrumb_path[0].function == generator->get_main_function();
+
+	if (!same_generator && !same_graph && !same_generator_via_breadcrumbs) {
+		_reset_breadcrumbs();
+
+		_graph_editor->set_generator(generator);
+		if (generator.is_null()) {
+			_enter_graph(graph, "Main");
+		} else {
+			_enter_graph(generator->get_main_function(), "Main");
+		}
 	}
 
 	{
@@ -181,7 +214,7 @@ void VoxelGraphEditorPlugin::_zn_make_visible(bool visible) {
 
 	if (visible) {
 		_bottom_panel_button->show();
-		make_bottom_panel_item_visible(_graph_editor);
+		make_bottom_panel_item_visible(_main_container);
 
 	} else {
 		_voxel_node.set(nullptr);
@@ -208,9 +241,10 @@ void VoxelGraphEditorPlugin::_hide_deferred() {
 	}
 	// The point is when the plugin's UI closed (for real, not closed and re-opened simultaneously!),
 	// it should cleanup its UI to not waste RAM (as it references stuff).
+	_reset_breadcrumbs();
 	_zn_edit(nullptr);
 
-	if (_graph_editor->is_visible_in_tree()) {
+	if (_main_container->is_visible_in_tree()) {
 		hide_bottom_panel();
 	}
 }
@@ -354,17 +388,18 @@ void VoxelGraphEditorPlugin::undock_graph_editor() {
 	ERR_FAIL_COND(_graph_editor_window != nullptr);
 	ZN_PRINT_VERBOSE("Undock voxel graph editor");
 
-	remove_control_from_bottom_panel(_graph_editor);
+	// Remove the main container (which holds breadcrumbs + graph editor) from the bottom panel
+	remove_control_from_bottom_panel(_main_container);
 	_bottom_panel_button = nullptr;
 
 	_graph_editor->set_popout_button_enabled(false);
-	_graph_editor->set_anchors_preset(Control::PRESET_FULL_RECT);
+	_main_container->set_anchors_preset(Control::PRESET_FULL_RECT);
 	// I don't know what hides it but I needed to make it visible again
-	_graph_editor->show();
+	_main_container->show();
 
 	_graph_editor_window = memnew(VoxelGraphEditorWindow);
 	update_graph_editor_window_title();
-	_graph_editor_window->add_child(_graph_editor);
+	_graph_editor_window->add_child(_main_container);
 	_graph_editor_window->connect(
 			"close_requested", callable_mp(this, &VoxelGraphEditorPlugin::_on_graph_editor_window_close_requested)
 	);
@@ -379,16 +414,16 @@ void VoxelGraphEditorPlugin::dock_graph_editor() {
 	ERR_FAIL_COND(_graph_editor_window == nullptr);
 	ZN_PRINT_VERBOSE("Dock voxel graph editor");
 
-	_graph_editor->get_parent()->remove_child(_graph_editor);
+	_main_container->get_parent()->remove_child(_main_container);
 	_graph_editor_window->queue_free();
 	_graph_editor_window = nullptr;
 
 	_graph_editor->set_popout_button_enabled(true);
 
-	_bottom_panel_button = add_control_to_bottom_panel(_graph_editor, ZN_TTR("Voxel Graph"));
+	_bottom_panel_button = add_control_to_bottom_panel(_main_container, ZN_TTR("Voxel Graph"));
 
 	_bottom_panel_button->show();
-	make_bottom_panel_item_visible(_graph_editor);
+	make_bottom_panel_item_visible(_main_container);
 }
 
 void VoxelGraphEditorPlugin::update_graph_editor_window_title() {
@@ -428,6 +463,69 @@ void VoxelGraphEditorPlugin::edit_ios(Ref<VoxelGraphFunction> graph) {
 
 	_io_dialog->set_graph(graph);
 	_io_dialog->popup_centered();
+}
+
+void VoxelGraphEditorPlugin::_on_graph_editor_enter_graph_requested(
+		Ref<VoxelGraphFunction> p_function, String p_name) {
+	_enter_graph(p_function, p_name);
+}
+
+void VoxelGraphEditorPlugin::_enter_graph(Ref<VoxelGraphFunction> p_function, const String &p_name) {
+	if (!p_function.is_null()) {
+		BreadcrumbEntry entry;
+		entry.function = p_function;
+		entry.display_name = p_name;
+		_breadcrumb_path.push_back(entry);
+		_update_breadcrumb_bar();
+	}
+
+	_graph_editor->set_graph(p_function);
+}
+
+void VoxelGraphEditorPlugin::_breadcrumb_button_pressed(int p_index) {
+	ERR_FAIL_INDEX(p_index, (int)_breadcrumb_path.size());
+
+	Ref<VoxelGraphFunction> target_function = _breadcrumb_path[p_index].function;
+
+	_breadcrumb_path.resize(p_index + 1);
+
+	_graph_editor->set_graph(target_function);
+	_update_breadcrumb_bar();
+}
+
+void VoxelGraphEditorPlugin::_update_breadcrumb_bar() {
+	for (int i = 0; i < _breadcrumb_bar->get_child_count(); ++i) {
+		_breadcrumb_bar->get_child(i)->queue_free();
+	}
+
+	_breadcrumb_bar->add_child(memnew(Label(TTR("Path:"))));
+	_breadcrumb_bar->set_visible(true);
+
+	Ref<ButtonGroup> group;
+	group.instantiate();
+
+	for (size_t i = 0; i < _breadcrumb_path.size(); i++) {
+		Button *btn = memnew(Button);
+		btn->set_text(_breadcrumb_path[i].display_name);
+		btn->set_toggle_mode(true);
+		btn->set_button_group(group);
+		btn->set_focus_mode(Control::FOCUS_NONE);
+		btn->set_pressed(true);
+		btn->connect("pressed",
+				callable_mp(this, &VoxelGraphEditorPlugin::_breadcrumb_button_pressed).bind((int)i));
+
+		const String res_path = _breadcrumb_path[i].function->get_path();
+		if (!res_path.is_empty()) {
+			btn->set_tooltip_text(res_path);
+		}
+
+		_breadcrumb_bar->add_child(btn);
+	}
+}
+
+void VoxelGraphEditorPlugin::_reset_breadcrumbs() {
+	_breadcrumb_path.resize(0);
+	_update_breadcrumb_bar();
 }
 
 void VoxelGraphEditorPlugin::_bind_methods() {
