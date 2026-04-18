@@ -334,6 +334,8 @@ public:
 	void debug_analyze_range(Span<const math::Interval> input_ranges, const bool optimize_execution_map);
 
 private:
+	void try_update_io_definitions();
+
 	void register_subresource(Resource &resource);
 	void unregister_subresource(Resource &resource);
 	void register_subresources();

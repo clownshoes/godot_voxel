@@ -275,6 +275,17 @@ void VoxelGraphEditorPlugin::_on_graph_editor_node_selected(uint32_t node_id) {
 }
 
 void VoxelGraphEditorPlugin::inspect_graph_or_generator(const VoxelGraphEditor &graph_editor) {
+	// If we're inside a subgraph (breadcrumb depth > 1), inspect the current graph function
+	// rather than the top-level generator, so the inspector stays in sync with the viewed graph.
+	if (_breadcrumb_path.size() > 1) {
+		Ref<VoxelGraphFunction> graph = graph_editor.get_graph();
+		if (graph.is_valid()) {
+			_ignore_edit_null = true;
+			get_editor_interface()->inspect_object(*graph);
+			_ignore_edit_null = false;
+			return;
+		}
+	}
 	Ref<VoxelGeneratorGraph> generator = graph_editor.get_generator();
 	if (generator.is_valid()) {
 		_ignore_edit_null = true;
@@ -480,6 +491,12 @@ void VoxelGraphEditorPlugin::_enter_graph(Ref<VoxelGraphFunction> p_function, co
 	}
 
 	_graph_editor->set_graph(p_function);
+
+	if (!p_function.is_null()) {
+		_ignore_edit_null = true;
+		get_editor_interface()->inspect_object(*p_function);
+		_ignore_edit_null = false;
+	}
 }
 
 void VoxelGraphEditorPlugin::_breadcrumb_button_pressed(int p_index) {
@@ -490,6 +507,13 @@ void VoxelGraphEditorPlugin::_breadcrumb_button_pressed(int p_index) {
 	_breadcrumb_path.resize(p_index + 1);
 
 	_graph_editor->set_graph(target_function);
+
+	if (target_function.is_valid()) {
+		_ignore_edit_null = true;
+		get_editor_interface()->inspect_object(*target_function);
+		_ignore_edit_null = false;
+	}
+
 	_update_breadcrumb_bar();
 }
 
