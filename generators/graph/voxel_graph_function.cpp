@@ -326,6 +326,15 @@ ProgramGraph::Node *duplicate_node(
 	return dst_node;
 }
 
+void VoxelGraphFunction::try_update_io_definitions() {
+	if (_automatic_io_setup_enabled) {
+		auto_pick_inputs_and_outputs();
+#ifdef TOOLS_ENABLED
+		notify_property_list_changed();
+#endif
+	}
+}
+
 uint32_t VoxelGraphFunction::create_node(NodeTypeID type_id, Vector2 position, uint32_t id) {
 	ERR_FAIL_COND_V(!NodeTypeDB::get_singleton().is_valid_type_id(type_id), ProgramGraph::NULL_ID);
 	ProgramGraph::Node *node = create_node_internal(_graph, type_id, position, id, true);
@@ -357,10 +366,16 @@ uint32_t VoxelGraphFunction::create_node(NodeTypeID type_id, Vector2 position, u
 	};
 	if (type_id == NODE_CUSTOM_INPUT) {
 		L::bind_custom_port(_inputs, *node);
-	}
-	if (type_id == NODE_CUSTOM_OUTPUT) {
+		if (node->name == StringName()) {
+			node->name = String("custom_input_{0}").format(varray(node->id));
+		}
+	} else if (type_id == NODE_CUSTOM_OUTPUT) {
 		L::bind_custom_port(_outputs, *node);
+		if (node->name == StringName()) {
+			node->name = String("custom_output_{0}").format(varray(node->id));
+		}
 	}
+	try_update_io_definitions();
 	emit_changed();
 	return node->id;
 }
@@ -392,6 +407,7 @@ void VoxelGraphFunction::remove_node(uint32_t node_id) {
 		}
 	}
 	_graph.remove_node(node_id);
+	try_update_io_definitions();
 	emit_changed();
 }
 
@@ -499,6 +515,7 @@ void VoxelGraphFunction::set_node_name(uint32_t node_id, StringName p_name) {
 		}
 	}
 	node->name = p_name;
+	try_update_io_definitions();
 	emit_signal(SIGNAL_NODE_NAME_CHANGED, node_id);
 	emit_changed();
 }
@@ -578,6 +595,7 @@ void VoxelGraphFunction::set_node_param_unchecked(
 		}
 	}
 
+	try_update_io_definitions();
 	emit_changed();
 }
 
