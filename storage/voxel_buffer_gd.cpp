@@ -9,6 +9,8 @@
 #include "../util/string/format.h"
 #include "metadata/voxel_metadata_variant.h"
 
+#include <vector>
+
 #ifdef ZN_GODOT
 #include "../util/godot/core/class_db.h"
 #endif
@@ -661,6 +663,202 @@ void VoxelBuffer::op_select_less_src_f_dst_i_values(
 	}
 }
 
+void VoxelBuffer::op_blend_biomes(
+		TypedArray<VoxelBuffer> biome_buffers,
+		PackedInt32Array channel_mapping,
+		Ref<Image> biome_image,
+		float image_scale,
+		Vector3i origin_in_voxels,
+		int lod
+) {
+	const int biome_count = biome_buffers.size();
+	ERR_FAIL_COND(biome_count == 0);
+	ERR_FAIL_COND(biome_count > 3);
+	ERR_FAIL_COND(biome_image.is_null());
+	ERR_FAIL_COND(image_scale <= 0.0f);
+	ERR_FAIL_COND(channel_mapping.size() != biome_count);
+
+	// Validate channel indices (0=R, 1=G, 2=B)
+	for (int b = 0; b < biome_count; ++b) {
+		ERR_FAIL_COND(channel_mapping[b] < 0 || channel_mapping[b] > 2);
+	}
+
+	const Vector3i size = get_size();
+	const int step = 1 << lod;
+	const int img_w = biome_image->get_width();
+	const int img_h = biome_image->get_height();
+
+	// Auto-calculate image center so that (0,0) world maps to the center of the image
+	const Vector2 image_center = Vector2(
+			static_cast<float>(img_w) / (2.0f * image_scale),
+			static_cast<float>(img_h) / (2.0f * image_scale));
+
+	// Keep Refs alive so the raw pointers remain valid for the entire function
+	std::vector<Ref<VoxelBuffer>> biome_refs(biome_count);
+	std::vector<const zylann::voxel::VoxelBuffer *> src_buffers(biome_count);
+	for (int b = 0; b < biome_count; ++b) {
+		biome_refs[b] = Object::cast_to<VoxelBuffer>(biome_buffers[b]);
+		ERR_FAIL_COND(biome_refs[b].is_null());
+		src_buffers[b] = &biome_refs[b]->get_buffer();
+	}
+
+	for (int z = 0; z < size.z; ++z) {
+		for (int x = 0; x < size.x; ++x) {
+			const float world_x = origin_in_voxels.x + x * step;
+			const float world_z = origin_in_voxels.z + z * step;
+
+			// Compute floating-point image coordinates
+			const float img_xf = (world_x + image_center.x) * image_scale;
+			const float img_zf = (world_z + image_center.y) * image_scale;
+
+			// Integer corners
+			const int x0 = math::clamp(static_cast<int>(Math::floor(img_xf)), 0, img_w - 1);
+			const int z0 = math::clamp(static_cast<int>(Math::floor(img_zf)), 0, img_h - 1);
+			const int x1 = math::clamp(x0 + 1, 0, img_w - 1);
+			const int z1 = math::clamp(z0 + 1, 0, img_h - 1);
+
+			// Fractional part
+			const float fx = img_xf - Math::floor(img_xf);
+			const float fz = img_zf - Math::floor(img_zf);
+
+			// Sample four corners
+			const Color c00 = biome_image->get_pixel(x0, z0);
+			const Color c10 = biome_image->get_pixel(x1, z0);
+			const Color c01 = biome_image->get_pixel(x0, z1);
+			const Color c11 = biome_image->get_pixel(x1, z1);
+
+			// Lerp
+			const Color pixel = c00 * (1 - fx) * (1 - fz)
+							+ c10 * fx * (1 - fz)
+							+ c01 * (1 - fx) * fz
+							+ c11 * fx * fz;
+			const float rgb[3] = { pixel.r, pixel.g, pixel.b };
+
+			// Read influence values from mapped RGB channels
+			float raw_weights[3];
+			float weight_sum = 0.0f;
+
+			for (int b = 0; b < biome_count; ++b) {
+				raw_weights[b] = rgb[channel_mapping[b]];
+				weight_sum += raw_weights[b];
+			}
+
+			for (int y = 0; y < size.y; ++y) {
+				float blended_sdf = 0.0f;
+
+				// Collect all texture contributions across biomes
+				// Max possible: 4 per biome * 3 biomes = 12
+				float tex_weights[12];
+				uint8_t tex_indices[12];
+				int tex_count = 0;
+
+				for (int b = 0; b < biome_count; ++b) {
+					const float biome_sdf = src_buffers[b]->get_voxel_f(
+							x, y, z, VoxelBuffer::CHANNEL_SDF);
+					blended_sdf += biome_sdf * raw_weights[b];
+
+					if (raw_weights[b] <= 0.0f) {
+						continue;
+					}
+
+					uint16_t packed_indices = src_buffers[b]->get_voxel(
+							x, y, z, VoxelBuffer::CHANNEL_INDICES);
+					uint16_t packed_weights = src_buffers[b]->get_voxel(
+							x, y, z, VoxelBuffer::CHANNEL_WEIGHTS);
+
+					auto indices = mixel4::decode_indices_from_packed_u16(packed_indices);
+					auto weights = mixel4::decode_weights_from_packed_u16(packed_weights);
+
+					for (int s = 0; s < 4; ++s) {
+						float w = (weights[s] / 255.0f) * raw_weights[b];
+						if (w > 0.0f) {
+							// Merge with existing entry if same index
+							bool found = false;
+							for (int t = 0; t < tex_count; ++t) {
+								if (tex_indices[t] == indices[s]) {
+									tex_weights[t] += w;
+									found = true;
+									break;
+								}
+							}
+							if (!found) {
+								tex_indices[tex_count] = indices[s];
+								tex_weights[tex_count] = w;
+								tex_count++;
+							}
+						}
+					}
+				}
+
+				// Find top 4 by weight
+				uint8_t final_indices[4] = { 0, 1, 2, 3 };
+				float final_weights[4] = { 0, 0, 0, 0 };
+
+				for (int t = 0; t < tex_count; ++t) {
+					// Find the smallest of the current top 4
+					int min_slot = 0;
+					for (int s = 1; s < 4; ++s) {
+						if (final_weights[s] < final_weights[min_slot]) {
+							min_slot = s;
+						}
+					}
+					if (tex_weights[t] > final_weights[min_slot]) {
+						final_weights[min_slot] = tex_weights[t];
+						final_indices[min_slot] = tex_indices[t];
+					}
+				}
+
+				// Ensure no duplicate indices in unused slots
+				for (int s = 0; s < 4; ++s) {
+					if (final_weights[s] <= 0.0f) {
+						// Pick an index not used by other slots
+						uint8_t idx = 0;
+						bool used;
+						do {
+							used = false;
+							for (int s2 = 0; s2 < 4; ++s2) {
+								if (s2 != s && final_indices[s2] == idx) {
+									used = true;
+									idx = (idx + 1) & 0xf;
+									break;
+								}
+							}
+						} while (used);
+						final_indices[s] = idx;
+					}
+				}
+
+				// Normalize weights to sum to 255
+				float wsum = 0.0f;
+				for (int s = 0; s < 4; ++s) {
+					wsum += final_weights[s];
+				}
+
+				uint8_t packed_w[4] = { 0, 0, 0, 0 };
+				if (wsum > 0.0f) {
+					float inv = 255.0f / wsum;
+					for (int s = 0; s < 4; ++s) {
+						packed_w[s] = math::clamp(
+								static_cast<int>(final_weights[s] * inv), 0, 255);
+					}
+				}
+
+				_buffer->set_voxel_f(blended_sdf, x, y, z, VoxelBuffer::CHANNEL_SDF);
+				_buffer->set_voxel(
+						mixel4::encode_indices_to_packed_u16(
+								final_indices[0], final_indices[1],
+								final_indices[2], final_indices[3]),
+						x, y, z, VoxelBuffer::CHANNEL_INDICES);
+				_buffer->set_voxel(
+						mixel4::encode_weights_to_packed_u16_lossy(
+								packed_w[0], packed_w[1],
+								packed_w[2], packed_w[3]),
+						x, y, z, VoxelBuffer::CHANNEL_WEIGHTS);
+			}
+		}
+	}
+}
+
 Variant VoxelBuffer::get_block_metadata() const {
 	return get_as_variant(_buffer->get_block_metadata());
 }
@@ -921,6 +1119,11 @@ void VoxelBuffer::_bind_methods() {
 					"dst_channel"
 			),
 			&VoxelBuffer::op_select_less_src_f_dst_i_values
+	);
+	ClassDB::bind_method(
+			D_METHOD("op_blend_biomes", "biome_buffers", "channel_mapping", "biome_image",
+					"image_scale", "origin_in_voxels", "lod"),
+			&VoxelBuffer::op_blend_biomes
 	);
 
 	ClassDB::bind_method(D_METHOD("get_block_metadata"), &VoxelBuffer::get_block_metadata);
