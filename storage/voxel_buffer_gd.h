@@ -207,6 +207,26 @@ public:
 			const VoxelBuffer::ChannelId dst_channel
 	);
 
+	// --- Biome blending operations ---
+
+	// Blends N biome buffers into this buffer using per-voxel weights sampled from an image.
+	// biome_buffers: Array of Ref<VoxelBuffer>, one per biome (must match this buffer's size).
+	// biome_image: Image whose RGB channels provide influence weights for each biome.
+	// image_scale: Converts world coords to image pixel coords.
+	// channel_mapping: Maps each biome index to an RGB component (0=R, 1=G, 2=B).
+	//     Must have the same size as biome_buffers.
+	// origin_in_voxels: World-space origin of the chunk.
+	// lod: Level of detail (each voxel step = 1 << lod world units).
+	// Image center is auto-calculated so that world origin (0,0) maps to the center of the image.
+	void op_blend_biomes(
+			TypedArray<VoxelBuffer> biome_buffers,
+			PackedInt32Array channel_mapping,
+			Ref<Image> biome_image,
+			float image_scale,
+			Vector3i origin_in_voxels,
+			int lod
+	);
+
 	// Metadata
 
 	Variant get_block_metadata() const;
