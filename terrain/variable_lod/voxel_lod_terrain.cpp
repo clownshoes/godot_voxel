@@ -3891,8 +3891,6 @@ void VoxelLodTerrain::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("preload_blocks", "origin", "extents", "lod_index"), &Self::preload_blocks);
 
-	ClassDB::bind_method(D_METHOD("set_run_stream_in_editor"), &Self::set_run_stream_in_editor);
-	ClassDB::bind_method(D_METHOD("is_stream_running_in_editor"), &Self::is_stream_running_in_editor);
 	ClassDB::bind_method(D_METHOD("is_area_meshed", "area_in_voxels", "lod_index"), &Self::_b_is_area_meshed);
 
 	// Normalmaps
