@@ -211,20 +211,28 @@ public:
 
 	// Blends N biome buffers into this buffer using per-voxel weights sampled from an image.
 	// biome_buffers: Array of Ref<VoxelBuffer>, one per biome (must match this buffer's size).
-	// biome_image: Image whose RGB channels provide influence weights for each biome.
+	// biome_image: FORMAT_RGBA8 image whose pixels pack up to three biome palette ids and
+	//     their weights as [id1:6][id2:6][id3:6][w1:7][w2:7], w3 = 1 - w1 - w2, id 0 = empty.
+	//     Packed ids cannot be interpolated, so the four surrounding pixels are decoded and
+	//     their weights accumulated per biome. The transition width itself is baked in.
 	// image_scale: Converts world coords to image pixel coords.
-	// channel_mapping: Maps each biome index to an RGB component (0=R, 1=G, 2=B).
+	// biome_palette_ids: The palette id each biome buffer stands for.
 	//     Must have the same size as biome_buffers.
 	// origin_in_voxels: World-space origin of the chunk.
 	// lod: Level of detail (each voxel step = 1 << lod world units).
+	// blend_sharpness: Exponent applied to the interpolated weights before they are used, 1
+	//     leaving them as baked. Higher values shorten the visible transition, roughly as
+	//     1/blend_sharpness, without narrowing the baked band, which would instead run out
+	//     of image pixels to ramp across and read as a hard edge.
 	// Image center is auto-calculated so that world origin (0,0) maps to the center of the image.
 	void op_blend_biomes(
 			TypedArray<VoxelBuffer> biome_buffers,
-			PackedInt32Array channel_mapping,
+			PackedInt32Array biome_palette_ids,
 			Ref<Image> biome_image,
 			float image_scale,
 			Vector3i origin_in_voxels,
-			int lod
+			int lod,
+			float blend_sharpness = 1.0f
 	);
 
 	// Metadata
