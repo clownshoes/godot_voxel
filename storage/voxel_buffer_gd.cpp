@@ -663,24 +663,46 @@ void VoxelBuffer::op_select_less_src_f_dst_i_values(
 	}
 }
 
+// Decodes one packed biome pixel. Layout: [id1:6][id2:6][id3:6][w1:7][w2:7],
+// w3 derived as 1 - w1 - w2, id 0 = empty. Mirrors the baker in cpp_utils.
+static inline void decode_biome_packed(uint32_t packed, int out_id[3], float out_weight[3]) {
+	out_id[0] = (packed >> 26) & 0x3F;
+	out_id[1] = (packed >> 20) & 0x3F;
+	out_id[2] = (packed >> 14) & 0x3F;
+	const float w1 = ((packed >> 7) & 0x7F) / 127.0f;
+	const float w2 = (packed & 0x7F) / 127.0f;
+	out_weight[0] = w1;
+	out_weight[1] = w2;
+	out_weight[2] = math::clamp(1.0f - w1 - w2, 0.0f, 1.0f);
+}
+
 void VoxelBuffer::op_blend_biomes(
 		TypedArray<VoxelBuffer> biome_buffers,
-		PackedInt32Array channel_mapping,
+		PackedInt32Array biome_palette_ids,
 		Ref<Image> biome_image,
 		float image_scale,
 		Vector3i origin_in_voxels,
-		int lod
+		int lod,
+		float blend_sharpness
 ) {
+	// A packed pixel names at most three biomes, but a block's footprint spans
+	// many pixels and can turn up more distinct biomes than any one of them.
+	const int MAX_BLEND_BIOMES = 8;
+
 	const int biome_count = biome_buffers.size();
 	ERR_FAIL_COND(biome_count == 0);
-	ERR_FAIL_COND(biome_count > 3);
+	ERR_FAIL_COND(biome_count > MAX_BLEND_BIOMES);
 	ERR_FAIL_COND(biome_image.is_null());
 	ERR_FAIL_COND(image_scale <= 0.0f);
-	ERR_FAIL_COND(channel_mapping.size() != biome_count);
+	ERR_FAIL_COND(biome_palette_ids.size() != biome_count);
+	ERR_FAIL_COND_MSG(
+			biome_image->get_format() != Image::FORMAT_RGBA8,
+			"op_blend_biomes: biome_image must be FORMAT_RGBA8."
+	);
 
-	// Validate channel indices (0=R, 1=G, 2=B)
+	// Palette ids are 6 bits, 0 reserved for empty
 	for (int b = 0; b < biome_count; ++b) {
-		ERR_FAIL_COND(channel_mapping[b] < 0 || channel_mapping[b] > 2);
+		ERR_FAIL_COND(biome_palette_ids[b] <= 0 || biome_palette_ids[b] > 63);
 	}
 
 	const Vector3i size = get_size();
@@ -711,45 +733,100 @@ void VoxelBuffer::op_blend_biomes(
 			const float img_xf = (world_x + image_center.x) * image_scale;
 			const float img_zf = (world_z + image_center.y) * image_scale;
 
-			// Integer corners
-			const int x0 = math::clamp(static_cast<int>(Math::floor(img_xf)), 0, img_w - 1);
-			const int z0 = math::clamp(static_cast<int>(Math::floor(img_zf)), 0, img_h - 1);
+			// Packed ids cannot be interpolated, but the weights they carry must
+			// be, or the blend stair-steps at one image pixel per step. Decode
+			// the four surrounding pixels and accumulate per biome instead.
+			const float sample_x = img_xf - 0.5f;
+			const float sample_z = img_zf - 0.5f;
+
+			const int x0 = math::clamp(static_cast<int>(Math::floor(sample_x)), 0, img_w - 1);
+			const int z0 = math::clamp(static_cast<int>(Math::floor(sample_z)), 0, img_h - 1);
 			const int x1 = math::clamp(x0 + 1, 0, img_w - 1);
 			const int z1 = math::clamp(z0 + 1, 0, img_h - 1);
 
-			// Fractional part
-			const float fx = img_xf - Math::floor(img_xf);
-			const float fz = img_zf - Math::floor(img_zf);
+			const float fx = sample_x - Math::floor(sample_x);
+			const float fz = sample_z - Math::floor(sample_z);
 
-			// Sample four corners
-			const Color c00 = biome_image->get_pixel(x0, z0);
-			const Color c10 = biome_image->get_pixel(x1, z0);
-			const Color c01 = biome_image->get_pixel(x0, z1);
-			const Color c11 = biome_image->get_pixel(x1, z1);
+			const int corner_x[4] = { x0, x1, x0, x1 };
+			const int corner_z[4] = { z0, z0, z1, z1 };
+			const float corner_weight[4] = {
+				(1.0f - fx) * (1.0f - fz),
+				fx * (1.0f - fz),
+				(1.0f - fx) * fz,
+				fx * fz
+			};
 
-			// Lerp
-			const Color pixel = c00 * (1 - fx) * (1 - fz)
-							+ c10 * fx * (1 - fz)
-							+ c01 * (1 - fx) * fz
-							+ c11 * fx * fz;
-			const float rgb[3] = { pixel.r, pixel.g, pixel.b };
-
-			// Read influence values from mapped RGB channels
-			float raw_weights[3];
+			// Gather each buffer's share of the four taps by palette id
+			float raw_weights[MAX_BLEND_BIOMES] = {};
 			float weight_sum = 0.0f;
 
+			for (int c = 0; c < 4; ++c) {
+				if (corner_weight[c] <= 0.0f) {
+					continue;
+				}
+
+				const Color pixel = biome_image->get_pixel(corner_x[c], corner_z[c]);
+
+				const uint32_t packed = (static_cast<uint32_t>(pixel.r * 255.0f + 0.5f) << 24)
+						| (static_cast<uint32_t>(pixel.g * 255.0f + 0.5f) << 16)
+						| (static_cast<uint32_t>(pixel.b * 255.0f + 0.5f) << 8)
+						| static_cast<uint32_t>(pixel.a * 255.0f + 0.5f);
+
+				int slot_id[3];
+				float slot_weight[3];
+				decode_biome_packed(packed, slot_id, slot_weight);
+
+				for (int b = 0; b < biome_count; ++b) {
+					for (int s = 0; s < 3; ++s) {
+						if (slot_id[s] != 0 && slot_id[s] == biome_palette_ids[b]) {
+							raw_weights[b] += slot_weight[s] * corner_weight[c];
+						}
+					}
+				}
+			}
+
 			for (int b = 0; b < biome_count; ++b) {
-				raw_weights[b] = rgb[channel_mapping[b]];
 				weight_sum += raw_weights[b];
+			}
+
+			if (weight_sum > 0.0f) {
+				const float inv_sum = 1.0f / weight_sum;
+				for (int b = 0; b < biome_count; ++b) {
+					raw_weights[b] *= inv_sum;
+				}
+			} else {
+				// Outside the map, or a pixel naming only biomes this block did
+				// not generate: fall back to the first buffer rather than zeroing.
+				raw_weights[0] = 1.0f;
+			}
+
+			// Shortens the visible transition without narrowing the baked band.
+			// Narrowing the band instead would run out of image pixels to ramp
+			// across; this compresses a well resolved ramp after interpolation,
+			// so the crossing stays smooth. Transition length scales as 1/x.
+			if (blend_sharpness != 1.0f) {
+				float sharp_sum = 0.0f;
+
+				for (int b = 0; b < biome_count; ++b) {
+					raw_weights[b] = Math::pow(raw_weights[b], blend_sharpness);
+					sharp_sum += raw_weights[b];
+				}
+
+				if (sharp_sum > 0.0f) {
+					const float inv_sharp = 1.0f / sharp_sum;
+					for (int b = 0; b < biome_count; ++b) {
+						raw_weights[b] *= inv_sharp;
+					}
+				}
 			}
 
 			for (int y = 0; y < size.y; ++y) {
 				float blended_sdf = 0.0f;
 
 				// Collect all texture contributions across biomes
-				// Max possible: 4 per biome * 3 biomes = 12
-				float tex_weights[12];
-				uint8_t tex_indices[12];
+				// Max possible: 4 textures per biome * MAX_BLEND_BIOMES
+				float tex_weights[4 * MAX_BLEND_BIOMES];
+				uint8_t tex_indices[4 * MAX_BLEND_BIOMES];
 				int tex_count = 0;
 
 				for (int b = 0; b < biome_count; ++b) {
@@ -1121,9 +1198,9 @@ void VoxelBuffer::_bind_methods() {
 			&VoxelBuffer::op_select_less_src_f_dst_i_values
 	);
 	ClassDB::bind_method(
-			D_METHOD("op_blend_biomes", "biome_buffers", "channel_mapping", "biome_image",
-					"image_scale", "origin_in_voxels", "lod"),
-			&VoxelBuffer::op_blend_biomes
+			D_METHOD("op_blend_biomes", "biome_buffers", "biome_palette_ids", "biome_image",
+					"image_scale", "origin_in_voxels", "lod", "blend_sharpness"),
+			&VoxelBuffer::op_blend_biomes, DEFVAL(1.0f)
 	);
 
 	ClassDB::bind_method(D_METHOD("get_block_metadata"), &VoxelBuffer::get_block_metadata);
