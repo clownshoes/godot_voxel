@@ -936,6 +936,77 @@ void VoxelBuffer::op_blend_biomes(
 	}
 }
 
+void VoxelBuffer::op_blend_prefab(
+		Ref<VoxelBuffer> prefab,
+		Vector3i prefab_origin,
+		Vector3i origin_in_voxels,
+		int lod,
+		int blend_margin,
+		float blend_strength,
+		float conform,
+		float anchor_height,
+		Ref<VoxelBuffer> terrain_heights
+) {
+	ERR_FAIL_COND(prefab.is_null());
+	ERR_FAIL_COND(blend_margin <= 0);
+	ERR_FAIL_COND(conform > 0.0f && terrain_heights.is_null());
+
+	const zylann::voxel::VoxelBuffer &src = prefab->get_buffer();
+	const Vector3i size = get_size();
+	const Vector3i prefab_size = src.get_size();
+	const int step = 1 << lod;
+
+	for (int z = 0; z < size.z; ++z) {
+		const int local_z = origin_in_voxels.z + z * step - prefab_origin.z;
+		if (local_z < 0 || local_z >= prefab_size.z) {
+			continue;
+		}
+
+		for (int x = 0; x < size.x; ++x) {
+			const int local_x = origin_in_voxels.x + x * step - prefab_origin.x;
+			if (local_x < 0 || local_x >= prefab_size.x) {
+				continue;
+			}
+
+			const int edge_distance =
+					math::min(local_x, prefab_size.x - 1 - local_x, local_z, prefab_size.z - 1 - local_z);
+			const float t = math::clamp(static_cast<float>(edge_distance) / blend_margin, 0.0f, 1.0f);
+			const float mask = t * t * (3.0f - 2.0f * t) * blend_strength;
+			if (mask <= 0.0f) {
+				continue;
+			}
+
+			// Continues the prefab past its box, so terrain can't poke through
+			const auto sample_prefab = [&src, &prefab_size, local_x, local_z](const int local_y) -> float {
+				const int clamped_y = math::clamp(local_y, 0, prefab_size.y - 1);
+				return src.get_voxel_f(local_x, clamped_y, local_z, VoxelBuffer::CHANNEL_SDF) +
+						static_cast<float>(local_y - clamped_y);
+			};
+
+			float column_shift = 0.0f;
+			if (conform > 0.0f) {
+				const float terrain_height =
+						terrain_heights->get_buffer().get_voxel_f(x, 0, z, VoxelBuffer::CHANNEL_SDF);
+				column_shift = conform * (terrain_height - anchor_height);
+			}
+
+			for (int y = 0; y < size.y; ++y) {
+				const float shifted_y =
+						static_cast<float>(origin_in_voxels.y + y * step - prefab_origin.y) - column_shift;
+				const int low_y = static_cast<int>(Math::floor(shifted_y));
+
+				// Interpolated, or a conforming prefab stair-steps down a slope
+				const float prefab_sdf = math::lerp(
+						sample_prefab(low_y), sample_prefab(low_y + 1), shifted_y - static_cast<float>(low_y)
+				);
+				const float terrain_sdf = _buffer->get_voxel_f(x, y, z, VoxelBuffer::CHANNEL_SDF);
+
+				_buffer->set_voxel_f(math::lerp(terrain_sdf, prefab_sdf, mask), x, y, z, VoxelBuffer::CHANNEL_SDF);
+			}
+		}
+	}
+}
+
 Variant VoxelBuffer::get_block_metadata() const {
 	return get_as_variant(_buffer->get_block_metadata());
 }
@@ -1201,6 +1272,11 @@ void VoxelBuffer::_bind_methods() {
 			D_METHOD("op_blend_biomes", "biome_buffers", "biome_palette_ids", "biome_image",
 					"image_scale", "origin_in_voxels", "lod", "blend_sharpness"),
 			&VoxelBuffer::op_blend_biomes, DEFVAL(1.0f)
+	);
+	ClassDB::bind_method(
+			D_METHOD("op_blend_prefab", "prefab", "prefab_origin", "origin_in_voxels", "lod", "blend_margin",
+					"blend_strength", "conform", "anchor_height", "terrain_heights"),
+			&VoxelBuffer::op_blend_prefab
 	);
 
 	ClassDB::bind_method(D_METHOD("get_block_metadata"), &VoxelBuffer::get_block_metadata);
