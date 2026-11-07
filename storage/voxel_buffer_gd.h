@@ -235,6 +235,26 @@ public:
 			float blend_sharpness = 1.0f
 	);
 
+	// Blends a prefab's SDF over this buffer, leaving other channels untouched.
+	// prefab_origin: Lowest corner, in world space.
+	// blend_margin: World units faded at the X and Z edges.
+	// blend_strength: 1 replaces the terrain outright.
+	// conform: 0 keeps the prefab flat, 1 follows the terrain.
+	// anchor_height: World height of the prefab's ground while flat.
+	// terrain_heights: Per column at y = 0, needed when conform is above 0.
+	// The prefab's top should be air and its bottom solid, as both continue past its box.
+	void op_blend_prefab(
+			Ref<VoxelBuffer> prefab,
+			Vector3i prefab_origin,
+			Vector3i origin_in_voxels,
+			int lod,
+			int blend_margin,
+			float blend_strength,
+			float conform,
+			float anchor_height,
+			Ref<VoxelBuffer> terrain_heights
+	);
+
 	// Metadata
 
 	Variant get_block_metadata() const;
