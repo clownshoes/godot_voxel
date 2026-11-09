@@ -350,7 +350,9 @@ struct SdfHemisphere {
 		return sdf_scale *
 				math::sdf_smooth_subtract(
 						math::sdf_sphere(pos, center, radius), //
-						math::sdf_plane(pos, -flat_direction, plane_d),
+						// Negated with the normal, so the plane passes through `center` (`plane_d` is
+						// `flat_direction.dot(center)`)
+						math::sdf_plane(pos, -flat_direction, -plane_d),
 						smoothness
 				);
 	}
